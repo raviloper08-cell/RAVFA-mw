@@ -1,0 +1,720 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Ravfa mw</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; user-select: none; -webkit-user-select: none; }
+html, body {
+  width: 100%; height: 100%;
+  background: #0a0a12;
+  overflow: hidden;
+  font-family: 'Courier New', monospace;
+  touch-action: none;
+}
+#gameCanvas {
+  display: block;
+  margin: 0 auto;
+  background: #1a1a2e;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+}
+#ui {
+  position: absolute;
+  top: 0; left: 0; width: 100%;
+  pointer-events: none;
+  color: #fff;
+  text-shadow: 2px 2px 0 #000;
+  font-size: 18px;
+  padding: 12px;
+  z-index: 10;
+}
+#score { font-size: 28px; font-weight: bold; }
+#best { font-size: 14px; opacity: 0.8; margin-top: 4px; }
+#coins { font-size: 16px; margin-top: 6px; color: #ffd700; }
+#titleScreen, #gameOverScreen {
+  position: absolute;
+  top: 0; left: 0; width: 100%; height: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  background: rgba(10,10,20,0.92);
+  color: #fff;
+  z-index: 20;
+  text-align: center;
+  padding: 20px;
+}
+#titleScreen h1 {
+  font-size: 52px;
+  letter-spacing: 4px;
+  margin-bottom: 8px;
+  color: #7df9ff;
+  text-shadow: 0 0 12px #7df9ff, 3px 3px 0 #000;
+}
+#titleScreen p, #gameOverScreen p {
+  font-size: 16px;
+  opacity: 0.85;
+  margin: 6px 0;
+  max-width: 320px;
+  line-height: 1.4;
+}
+.btn {
+  margin-top: 24px;
+  padding: 14px 36px;
+  font-size: 20px;
+  background: #7df9ff;
+  color: #000;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  font-family: inherit;
+  font-weight: bold;
+  box-shadow: 0 4px 0 #2a8a8a;
+  pointer-events: auto;
+}
+.btn:active { transform: translateY(3px); box-shadow: 0 1px 0 #2a8a8a; }
+#holdBar {
+  position: absolute;
+  bottom: 30px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 120px;
+  height: 10px;
+  background: #333;
+  border: 2px solid #fff;
+  display: none;
+  z-index: 15;
+}
+#holdFill {
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(90deg, #7df9ff, #ff6b6b);
+  transition: width 0.05s linear;
+}
+</style>
+</head>
+<body>
+<canvas id="gameCanvas"></canvas>
+<div id="ui">
+  <div id="score">0</div>
+  <div id="best">BEST: 0</div>
+  <div id="coins">★ 0</div>
+</div>
+<div id="holdBar"><div id="holdFill"></div></div>
+
+<div id="titleScreen">
+  <h1>RAVFA MW</h1>
+  <p>Очень похоже на Wall Kickers</p>
+  <p>Тапни / кликни чтобы прыгнуть<br>Удерживай — сила прыжка<br>В воздухе — reverse</p>
+  <button class="btn" id="startBtn">ИГРАТЬ</button>
+</div>
+
+<div id="gameOverScreen" style="display:none;">
+  <h1 style="font-size:42px; color:#ff6b6b;">GAME OVER</h1>
+  <p id="finalScore">Высота: 0</p>
+  <p id="finalCoins">Монеты: 0</p>
+  <button class="btn" id="restartBtn">ЕЩЁ РАЗ</button>
+</div>
+
+<script>
+(function(){
+"use strict";
+
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+const scoreEl = document.getElementById('score');
+const bestEl = document.getElementById('best');
+const coinsEl = document.getElementById('coins');
+const holdBar = document.getElementById('holdBar');
+const holdFill = document.getElementById('holdFill');
+const titleScreen = document.getElementById('titleScreen');
+const gameOverScreen = document.getElementById('gameOverScreen');
+const finalScore = document.getElementById('finalScore');
+const finalCoins = document.getElementById('finalCoins');
+
+let W, H, scale;
+function resize() {
+  const maxW = Math.min(window.innerWidth, 420);
+  const maxH = window.innerHeight;
+  scale = Math.min(maxW / 360, maxH / 640);
+  W = Math.floor(360 * scale);
+  H = Math.floor(640 * scale);
+  canvas.width = W;
+  canvas.height = H;
+  canvas.style.width = W + 'px';
+  canvas.style.height = H + 'px';
+}
+window.addEventListener('resize', resize);
+resize();
+
+// ===== GAME STATE =====
+let state = 'title'; // title | play | dead
+let score = 0;
+let best = parseInt(localStorage.getItem('ravfa_best') || '0');
+let coins = 0;
+let totalCoins = parseInt(localStorage.getItem('ravfa_coins') || '0');
+bestEl.textContent = 'BEST: ' + best;
+coinsEl.textContent = '★ ' + totalCoins;
+
+const GRAVITY = 0.28;
+const SLIDE_SPEED = 0.55;
+const JUMP_BASE = 7.2;
+const JUMP_MAX_EXTRA = 5.8;
+const AIR_REVERSE_FORCE = 6.8;
+const WALL_OFFSET = 28;
+const PLAYER_W = 18;
+const PLAYER_H = 22;
+
+let player = {
+  x: 0, y: 0,
+  vx: 0, vy: 0,
+  side: 'left', // left | right | air
+  onWall: true,
+  canReverse: true,
+  jumpPower: 0,
+  holding: false,
+  holdTime: 0,
+  anim: 0,
+  facing: 1,
+  dead: false
+};
+
+let cameraY = 0;
+let platforms = [];
+let spikes = [];
+let coinsList = [];
+let particles = [];
+let lastPlatformY = 0;
+let highestY = 0;
+let frame = 0;
+
+// ===== INPUT =====
+let pointerDown = false;
+let pointerStart = 0;
+
+function onDown(e) {
+  e.preventDefault();
+  if (state === 'title' || state === 'dead') return;
+  pointerDown = true;
+  pointerStart = performance.now();
+  player.holding = true;
+  player.holdTime = 0;
+  holdBar.style.display = 'block';
+}
+function onUp(e) {
+  e.preventDefault();
+  if (!pointerDown) return;
+  pointerDown = false;
+  player.holding = false;
+  holdBar.style.display = 'none';
+  holdFill.style.width = '0%';
+
+  if (state !== 'play') return;
+
+  if (player.onWall) {
+    // Jump off wall
+    const power = JUMP_BASE + Math.min(player.holdTime / 350, 1) * JUMP_MAX_EXTRA;
+    const dir = player.side === 'left' ? 1 : -1;
+    player.vx = dir * power * 0.85;
+    player.vy = -power * 0.92;
+    player.onWall = false;
+    player.side = 'air';
+    player.canReverse = true;
+    player.facing = dir;
+    spawnJumpParticles();
+  } else if (player.canReverse && player.side === 'air') {
+    // Mid-air reverse
+    player.vx = -Math.sign(player.vx || player.facing) * AIR_REVERSE_FORCE;
+    player.vy = Math.min(player.vy, -3.2);
+    player.canReverse = false;
+    player.facing = -player.facing;
+    spawnReverseParticles();
+  }
+}
+
+canvas.addEventListener('mousedown', onDown);
+canvas.addEventListener('mouseup', onUp);
+canvas.addEventListener('mouseleave', onUp);
+canvas.addEventListener('touchstart', onDown, {passive:false});
+canvas.addEventListener('touchend', onUp, {passive:false});
+canvas.addEventListener('touchcancel', onUp, {passive:false});
+
+document.getElementById('startBtn').addEventListener('click', startGame);
+document.getElementById('restartBtn').addEventListener('click', startGame);
+
+// Keyboard
+window.addEventListener('keydown', e => {
+  if (e.code === 'Space' || e.code === 'ArrowUp') {
+    if (!pointerDown) onDown(e);
+  }
+});
+window.addEventListener('keyup', e => {
+  if (e.code === 'Space' || e.code === 'ArrowUp') onUp(e);
+});
+
+// ===== INIT / RESET =====
+function startGame() {
+  state = 'play';
+  titleScreen.style.display = 'none';
+  gameOverScreen.style.display = 'none';
+  score = 0;
+  coins = 0;
+  cameraY = 0;
+  highestY = 0;
+  platforms = [];
+  spikes = [];
+  coinsList = [];
+  particles = [];
+  lastPlatformY = H + 80;
+
+  // Starting platforms
+  for (let i = 0; i < 8; i++) {
+    generatePlatforms(true);
+  }
+
+  // Player starts on left wall near bottom
+  const startPlat = platforms[0];
+  player.x = WALL_OFFSET + 4;
+  player.y = startPlat.y + 40;
+  player.vx = 0;
+  player.vy = 0;
+  player.side = 'left';
+  player.onWall = true;
+  player.canReverse = true;
+  player.holding = false;
+  player.holdTime = 0;
+  player.dead = false;
+  player.anim = 0;
+  player.facing = 1;
+
+  scoreEl.textContent = '0';
+  coinsEl.textContent = '★ ' + totalCoins;
+}
+
+function generatePlatforms(initial = false) {
+  const gap = 70 + Math.random() * 55;
+  lastPlatformY -= gap;
+
+  // Left or right biased
+  const side = Math.random() > 0.48 ? 'left' : 'right';
+  const height = 90 + Math.random() * 110;
+  const x = side === 'left' ? 0 : W - WALL_OFFSET * 2 - 8;
+
+  // Sometimes both sides almost aligned for double jumps
+  const both = Math.random() < 0.18;
+
+  platforms.push({
+    x: x,
+    y: lastPlatformY,
+    w: WALL_OFFSET * 2 + 8,
+    h: height,
+    side: side,
+    type: Math.random() < 0.12 ? 'spike' : 'normal',
+    move: Math.random() < 0.09 ? (Math.random() < 0.5 ? 1 : -1) : 0,
+    moveOffset: 0
+  });
+
+  if (both) {
+    const otherSide = side === 'left' ? 'right' : 'left';
+    const ox = otherSide === 'left' ? 0 : W - WALL_OFFSET * 2 - 8;
+    platforms.push({
+      x: ox,
+      y: lastPlatformY + (Math.random() * 30 - 15),
+      w: WALL_OFFSET * 2 + 8,
+      h: height * 0.7,
+      side: otherSide,
+      type: 'normal',
+      move: 0,
+      moveOffset: 0
+    });
+  }
+
+  // Coins
+  if (Math.random() < 0.55) {
+    const cx = side === 'left' ? WALL_OFFSET + 40 + Math.random()*40 : W - WALL_OFFSET - 60 - Math.random()*40;
+    coinsList.push({
+      x: cx,
+      y: lastPlatformY + height * 0.4,
+      r: 7,
+      taken: false
+    });
+  }
+
+  // Clean far platforms
+  if (platforms.length > 25) {
+    platforms = platforms.filter(p => p.y < cameraY + H + 200);
+  }
+  if (coinsList.length > 30) {
+    coinsList = coinsList.filter(c => !c.taken && c.y < cameraY + H + 200);
+  }
+}
+
+// ===== PHYSICS & UPDATE =====
+function update(dt) {
+  if (state !== 'play') return;
+  frame++;
+
+  // Hold power
+  if (player.holding && player.onWall) {
+    player.holdTime += dt;
+    const pct = Math.min(player.holdTime / 350, 1) * 100;
+    holdFill.style.width = pct + '%';
+  }
+
+  // Gravity & movement
+  if (!player.onWall) {
+    player.vy += GRAVITY;
+    player.x += player.vx;
+    player.y += player.vy;
+
+    // Air friction
+    player.vx *= 0.995;
+  } else {
+    // Sliding down wall
+    player.vy = SLIDE_SPEED;
+    player.y += player.vy;
+    player.vx = 0;
+  }
+
+  // Camera follow (smooth up)
+  const targetCam = player.y - H * 0.55;
+  if (targetCam < cameraY) {
+    cameraY += (targetCam - cameraY) * 0.12;
+  }
+
+  // Score by height
+  const heightScore = Math.max(0, Math.floor((-player.y + 500) / 12));
+  if (heightScore > score) {
+    score = heightScore;
+    scoreEl.textContent = score;
+  }
+  if (player.y < highestY) highestY = player.y;
+
+  // Generate more platforms
+  while (lastPlatformY > cameraY - 300) {
+    generatePlatforms();
+  }
+
+  // Moving platforms
+  platforms.forEach(p => {
+    if (p.move) {
+      p.moveOffset += p.move * 0.6;
+      if (Math.abs(p.moveOffset) > 35) p.move *= -1;
+    }
+  });
+
+  // Collision with platforms
+  let landed = false;
+  for (let p of platforms) {
+    const px = p.x + (p.move ? p.moveOffset : 0);
+    const py = p.y;
+
+    // Cling check (when flying toward wall)
+    if (!player.onWall) {
+      // Left wall cling
+      if (p.side === 'left' && player.vx < 0 &&
+          player.x < px + p.w - 4 &&
+          player.x + PLAYER_W > px + 6 &&
+          player.y + PLAYER_H > py + 8 &&
+          player.y < py + p.h - 8) {
+        player.onWall = true;
+        player.side = 'left';
+        player.x = px + 6;
+        player.vx = 0;
+        player.vy = SLIDE_SPEED;
+        player.canReverse = true;
+        landed = true;
+        if (p.type === 'spike') die();
+        break;
+      }
+      // Right wall cling
+      if (p.side === 'right' && player.vx > 0 &&
+          player.x + PLAYER_W > px + 4 &&
+          player.x < px + p.w - 6 &&
+          player.y + PLAYER_H > py + 8 &&
+          player.y < py + p.h - 8) {
+        player.onWall = true;
+        player.side = 'right';
+        player.x = px + p.w - PLAYER_W - 6;
+        player.vx = 0;
+        player.vy = SLIDE_SPEED;
+        player.canReverse = true;
+        landed = true;
+        if (p.type === 'spike') die();
+        break;
+      }
+    } else {
+      // Still on wall? Check if slid off
+      if (player.side === p.side) {
+        const onThis = player.y + PLAYER_H > py && player.y < py + p.h;
+        if (onThis && p.type === 'spike') {
+          // check proximity to spikes
+          die();
+        }
+      }
+    }
+  }
+
+  // Fall off bottom of screen or too far down
+  if (player.y > cameraY + H + 80) {
+    die();
+  }
+
+  // Coins
+  for (let c of coinsList) {
+    if (c.taken) continue;
+    const dx = (player.x + PLAYER_W/2) - c.x;
+    const dy = (player.y + PLAYER_H/2) - c.y;
+    if (dx*dx + dy*dy < 22*22) {
+      c.taken = true;
+      coins++;
+      totalCoins++;
+      localStorage.setItem('ravfa_coins', totalCoins);
+      coinsEl.textContent = '★ ' + totalCoins;
+      spawnCoinParticles(c.x, c.y);
+    }
+  }
+
+  // Particles
+  particles = particles.filter(p => {
+    p.life--;
+    p.x += p.vx;
+    p.y += p.vy;
+    p.vy += 0.05;
+    return p.life > 0;
+  });
+
+  player.anim++;
+}
+
+function die() {
+  if (player.dead) return;
+  player.dead = true;
+  state = 'dead';
+  if (score > best) {
+    best = score;
+    localStorage.setItem('ravfa_best', best);
+    bestEl.textContent = 'BEST: ' + best;
+  }
+  finalScore.textContent = 'Высота: ' + score;
+  finalCoins.textContent = 'Монеты за забег: ' + coins;
+  setTimeout(() => {
+    gameOverScreen.style.display = 'flex';
+  }, 600);
+  spawnDeathParticles();
+}
+
+// ===== PARTICLES =====
+function spawnJumpParticles() {
+  for (let i = 0; i < 8; i++) {
+    particles.push({
+      x: player.x + PLAYER_W/2,
+      y: player.y + PLAYER_H,
+      vx: (Math.random()-0.5)*3,
+      vy: Math.random()*2 + 1,
+      life: 20 + Math.random()*15,
+      color: '#7df9ff'
+    });
+  }
+}
+function spawnReverseParticles() {
+  for (let i = 0; i < 10; i++) {
+    particles.push({
+      x: player.x + PLAYER_W/2,
+      y: player.y + PLAYER_H/2,
+      vx: (Math.random()-0.5)*5,
+      vy: (Math.random()-0.5)*5,
+      life: 18,
+      color: '#ff6b6b'
+    });
+  }
+}
+function spawnCoinParticles(x, y) {
+  for (let i = 0; i < 6; i++) {
+    particles.push({
+      x, y,
+      vx: (Math.random()-0.5)*4,
+      vy: (Math.random()-0.5)*4,
+      life: 25,
+      color: '#ffd700'
+    });
+  }
+}
+function spawnDeathParticles() {
+  for (let i = 0; i < 20; i++) {
+    particles.push({
+      x: player.x + PLAYER_W/2,
+      y: player.y + PLAYER_H/2,
+      vx: (Math.random()-0.5)*6,
+      vy: (Math.random()-0.5)*6,
+      life: 40,
+      color: '#ff4444'
+    });
+  }
+}
+
+// ===== DRAW =====
+function draw() {
+  // Background
+  ctx.fillStyle = '#12122a';
+  ctx.fillRect(0, 0, W, H);
+
+  // Parallax stars / grid
+  ctx.fillStyle = '#2a2a4a';
+  for (let i = 0; i < 40; i++) {
+    const sx = (i * 97) % W;
+    const sy = ((i * 53 + cameraY * 0.15) % (H + 40)) - 20;
+    ctx.fillRect(sx, sy, 2, 2);
+  }
+
+  // Side walls (visual)
+  ctx.fillStyle = '#0d0d1a';
+  ctx.fillRect(0, 0, 12, H);
+  ctx.fillRect(W - 12, 0, 12, H);
+
+  // Platforms
+  platforms.forEach(p => {
+    const px = p.x + (p.move ? p.moveOffset : 0);
+    const py = p.y - cameraY;
+
+    if (py + p.h < -20 || py > H + 20) return;
+
+    // Main body
+    if (p.type === 'spike') {
+      ctx.fillStyle = '#3a1a1a';
+    } else {
+      ctx.fillStyle = '#2a3a5a';
+    }
+    ctx.fillRect(px, py, p.w, p.h);
+
+    // Pixel border
+    ctx.fillStyle = '#4a6a9a';
+    ctx.fillRect(px, py, p.w, 3);
+    ctx.fillRect(px, py + p.h - 3, p.w, 3);
+    ctx.fillRect(px, py, 3, p.h);
+    ctx.fillRect(px + p.w - 3, py, 3, p.h);
+
+    // Spikes
+    if (p.type === 'spike') {
+      ctx.fillStyle = '#ff4444';
+      const spikeCount = Math.floor(p.h / 18);
+      for (let s = 0; s < spikeCount; s++) {
+        const sy = py + 10 + s * 18;
+        if (p.side === 'left') {
+          ctx.beginPath();
+          ctx.moveTo(px + p.w - 2, sy);
+          ctx.lineTo(px + p.w + 10, sy + 7);
+          ctx.lineTo(px + p.w - 2, sy + 14);
+          ctx.fill();
+        } else {
+          ctx.beginPath();
+          ctx.moveTo(px + 2, sy);
+          ctx.lineTo(px - 10, sy + 7);
+          ctx.lineTo(px + 2, sy + 14);
+          ctx.fill();
+        }
+      }
+    }
+
+    // Grip lines
+    ctx.fillStyle = 'rgba(255,255,255,0.08)';
+    for (let g = 0; g < p.h; g += 12) {
+      ctx.fillRect(px + 4, py + g, p.w - 8, 1);
+    }
+  });
+
+  // Coins
+  coinsList.forEach(c => {
+    if (c.taken) return;
+    const cy = c.y - cameraY;
+    if (cy < -20 || cy > H + 20) return;
+    ctx.fillStyle = '#ffd700';
+    ctx.beginPath();
+    ctx.arc(c.x, cy, c.r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#fff8a0';
+    ctx.beginPath();
+    ctx.arc(c.x - 2, cy - 2, 3, 0, Math.PI * 2);
+    ctx.fill();
+  });
+
+  // Player
+  if (!player.dead) {
+    const px = player.x;
+    const py = player.y - cameraY;
+
+    // Shadow / body
+    ctx.fillStyle = '#1a1a2e';
+    ctx.fillRect(px + 2, py + 2, PLAYER_W, PLAYER_H);
+
+    // Main body (pixel character)
+    ctx.fillStyle = player.onWall ? '#7df9ff' : '#a0f0ff';
+    ctx.fillRect(px, py, PLAYER_W, PLAYER_H);
+
+    // Eyes
+    ctx.fillStyle = '#000';
+    if (player.facing > 0) {
+      ctx.fillRect(px + 10, py + 6, 4, 4);
+      ctx.fillRect(px + 10, py + 12, 4, 3);
+    } else {
+      ctx.fillRect(px + 4, py + 6, 4, 4);
+      ctx.fillRect(px + 4, py + 12, 4, 3);
+    }
+
+    // Legs animation
+    const legOff = Math.sin(player.anim * 0.25) * 2;
+    ctx.fillStyle = '#5ac8d8';
+    if (player.onWall) {
+      ctx.fillRect(px + 3, py + PLAYER_H - 2, 5, 4 + legOff);
+      ctx.fillRect(px + 10, py + PLAYER_H - 2, 5, 4 - legOff);
+    } else {
+      ctx.fillRect(px + 4, py + PLAYER_H - 1, 4, 5);
+      ctx.fillRect(px + 10, py + PLAYER_H - 1, 4, 5);
+    }
+
+    // Kick effect
+    if (!player.onWall && player.canReverse === false) {
+      ctx.fillStyle = 'rgba(255,100,100,0.4)';
+      ctx.beginPath();
+      ctx.arc(px + PLAYER_W/2, py + PLAYER_H/2, 14, 0, Math.PI*2);
+      ctx.fill();
+    }
+  }
+
+  // Particles
+  particles.forEach(p => {
+    ctx.globalAlpha = p.life / 40;
+    ctx.fillStyle = p.color;
+    ctx.fillRect(p.x - 2, p.y - cameraY - 2, 4, 4);
+  });
+  ctx.globalAlpha = 1;
+
+  // Top gradient fade
+  const grad = ctx.createLinearGradient(0, 0, 0, 60);
+  grad.addColorStop(0, 'rgba(10,10,20,0.7)');
+  grad.addColorStop(1, 'rgba(10,10,20,0)');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, W, 60);
+}
+
+// ===== LOOP =====
+let lastTime = performance.now();
+function loop(now) {
+  const dt = Math.min(now - lastTime, 32);
+  lastTime = now;
+
+  update(dt);
+  draw();
+
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+// Initial best display
+bestEl.textContent = 'BEST: ' + best;
+})();
+</script>
+</body>
+</html>
